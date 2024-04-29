@@ -6,6 +6,8 @@ import pandas as pd
 import json
 import requests
 import json
+import os
+from dotenv import load_dotenv
 
 from sqlalchemy import create_engine, MetaData
 from sqlalchemy.orm import sessionmaker, Session
@@ -42,15 +44,23 @@ app.add_middleware(
 # url = 'https://enershare.epu.ntua.gr/provider-data-app/openapi/0.5/'    # https://<baseurl>/<data-app-path>/openapi/<beckend-service-version>/
 # endpoint = 'efcomp'                                                     # API endpoint 
 
-database_url = "postgresql://app_user:password@enershare.epu.ntua.gr:3333"
-engine = create_engine(database_url, pool_pre_ping = True)
+# Load variables from .env file
+load_dotenv()
 
-# Headers (if any)
-jwt_token = 'APIKEY-tfiXkagpufdLKvdyyXxwEMwG' # API key defined in values.yaml file at "is.security.key"
+# Access environmental variables
+database_url = os.environ.get('DATABASE_URL')
+jwt_token = os.environ.get('JWT_TOKEN')
+forward_id = os.environ.get('FORWARD_ID')
+forward_sender = os.environ.get('FORWARD_SENDER')
+
+# Create engine with database URL
+engine = create_engine(database_url, pool_pre_ping=True)
+
+# Headers
 headers = {
     'Authorization': 'Bearer' + jwt_token,
-    'Forward-Id': 'urn:ids:enershare:connectors:NTUA:Consumer:ConsumerAgent',         # reciever connector ID
-    'Forward-Sender': 'urn:ids:enershare:connectors:NTUA:Provider:ProviderAgent'      # Sender connector ID
+    'Forward-Id': forward_id,
+    'Forward-Sender': forward_sender
 }
 
 #  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Functions ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -137,4 +147,4 @@ async def root():
     return {"message": "Congratulations! Your API is working as expected. Now head over to http://localhost:8889/docs"}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8889, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=9876, reload=True)
