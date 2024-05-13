@@ -9,7 +9,8 @@ import json
 import os
 from dotenv import load_dotenv
 
-from sqlalchemy import create_engine, MetaData
+from sqlalchemy import create_engine, MetaData, text
+from sqlalchemy.schema import CreateSchema
 from sqlalchemy.orm import sessionmaker, Session
 from fastapi import  Depends
 
@@ -52,6 +53,7 @@ database_url = os.environ.get('DATABASE_URL')
 jwt_token = os.environ.get('JWT_TOKEN')
 forward_id = os.environ.get('FORWARD_ID')
 forward_sender = os.environ.get('FORWARD_SENDER')
+connector_url = os.environ.get('CONNECTOR_URL')
 
 # Create engine with database URL
 engine = create_engine(database_url, pool_pre_ping=True)
@@ -74,37 +76,67 @@ def get_db_session():
         db.close()
 
 # Create a dependency to get the database metadata
-def get_metadata():
+def get_metadata(schema='public'):
     metadata = MetaData()
-    metadata.reflect(bind=engine)    
+    metadata.reflect(bind=engine, schema=schema)    
     return metadata
 
-def store_to_db(data, table_name):
+# Function to create schema
+async def create_schema(schema_name):
+    try:
+        with engine.connect() as connection:
+            if engine.dialect.has_schema(connection, schema_name):
+                print(f"Schema \"{schema_name}\" succesfully created")
+            else:
+                connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS {schema_name};'))
+                # connection.execute(CreateSchema(schema_name, if_not_exists=True))                
+                connection.commit()
+                print(f"Schema \"{schema_name}\" succesfully created")
+    except Exception as e:
+        print("An error occurred while creating scheama in the database:", e)
 
-    df = pd.DataFrame(data)
-    # print(df.head())
-    # return
+def store_to_db(data, table_name, pilot):
     try:
         # Convert DataFrame to SQL table
-        df.to_sql(table_name, engine, if_exists='replace', index=False)
+        pd.DataFrame(data).to_sql(table_name, engine, schema=pilot, if_exists='replace', index=False)
         print("Data has been successfully stored in the database.")
     except Exception as e:
         print("An error occurred while storing data in the database:", e)
-        
+
+async def find_schemas():
+    with engine.connect() as connection:
+        result = connection.execute(text("SELECT schema_name FROM information_schema.schemata"))
+        schema_names = [row[0] for row in result.fetchall()]
+        non_system_schemas = [schema for schema in schema_names if not schema.startswith("pg_") and schema != "information_schema"]
+        return non_system_schemas  
+    
 #  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Endpoints ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+@app.post('/print_schemas',tags=['Get Data'])
+async def print_schemas():
+    return {"non_system_schemas": await find_schemas()}
+
 @app.post("/get_all_data", tags=['Get Data'])
-async def get_all_data( url: str  = 'http://enershare.epu.ntua.gr/provider-data-app/openapi/0.5/',
+async def get_all_data( api_version: str  = '0.5',
                         endpoint: str = 'efcomp',
-                        store_2_db: bool = False):
+                        pilot: str = 'Pilot7',
+                        save: bool = True):
 
-    response = requests.get(url+endpoint, headers=headers)
+    temp_headers = headers.copy()
+    temp_headers['Forward-Id'] = temp_headers['Forward-Id'] + pilot
+    # print(temp_headers)
 
+    request_url = f'{connector_url}/{api_version}/{endpoint}/'
+    # print(request_url)
+    response = requests.get(request_url, headers=temp_headers)
+    # data = ["1","2","3","4"]
     # Check if request was successful (status code 200)
     if response.status_code == 200:
         try:
             data = response.json()  # Attempt to decode JSON
-            if(store_2_db): store_to_db(data, endpoint)
-            return data
+            if(save): 
+                await create_schema(pilot.lower()) # create schema if not exists - wait for schema to be created
+                store_to_db(data, endpoint, pilot.lower()) # store df to db
+            return data[:10]
         except ValueError:  # includes simplejson.decoder.JSONDecodeError
             print("Response content is not valid JSON")
             print(response.text)
@@ -114,19 +146,36 @@ async def get_all_data( url: str  = 'http://enershare.epu.ntua.gr/provider-data-
 
 # Endpoint to get a list of tables in the database
 @app.get("/get_tables", tags=["Get tables list"])
-async def get_tables(metadata: MetaData = Depends(get_metadata)):
+async def get_tables():
+
+    non_system_schemas = []
     try:
-        return {"tables": list(metadata.tables.keys())}
+        non_system_schemas = await find_schemas()
+    except Exception as e:
+        print("An error occurred while searching schemas in the database:", e)
+
+    print(non_system_schemas)
+
+    try:
+        tables = []
+        for schema_name in non_system_schemas:
+            metadata = get_metadata(schema=schema_name)
+            for table_name in metadata.tables:
+                tables.append({"table": table_name, "schema": schema_name})
+        return {"tables": tables}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # Endpoint to get the first entries of a table 
 @app.get("/get_table", tags=["Get table dataframe"])
 async def get_table_as_df(
-    table_name: str,
+    table_name: str = 'pilot7.efcomp',
+    schema_name: str = 'pilot7',
     db: Session = Depends(get_db_session),
-    metadata: MetaData = Depends(get_metadata)
 ):
+
+    metadata = get_metadata(schema=schema_name)
+
     # Check if the table exists
     if table_name not in metadata.tables:
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
