@@ -10,9 +10,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: # sudo ls /var/lib/docker/volumes/ds_viz_postgres_data/_data
+      - postgres_data:/var/lib/postgresql/data
     networks: 
       - ds_viz_network
-
+  
   ds_viz:
     container_name: ds_viz-backend-service
     restart: always
@@ -53,3 +55,4 @@ networks:
 
 volumes:
     pgadmin-data:
+    postgres_data:

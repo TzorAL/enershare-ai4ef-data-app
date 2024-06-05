@@ -1,0 +1,7 @@
+__pycache__/
+misc/
+.env
+servers.json
+Makefile
+pgpass
+endpoint_extract.py
