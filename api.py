@@ -86,11 +86,17 @@ def create_dataframe(data):
 
 def store_to_db(data, table_name, pilot):
     try:
-        # Convert DataFrame to SQL table
-        create_dataframe(data).to_sql(table_name, engine, schema=pilot, if_exists='replace', index=False)
-        print("Data has been successfully stored in the database.")
+        if isinstance(data, pd.DataFrame):
+            data.to_sql(table_name, engine, schema=pilot, if_exists='replace', index=False)
+            print("Data has been successfully stored in the database.")
+        else:
+            # Convert DataFrame to SQL table
+            create_dataframe(data).to_sql(table_name, engine, schema=pilot, if_exists='replace', index=False)
+            print("Data has been successfully stored in the database.")
     except Exception as e:
-        print("An error occurred while storing data in the database:", e)
+            print("An error occurred while storing data in the database:", e)
+            return False
+    return True
 
 # Function to create schema
 async def create_schema(schema_name):
@@ -113,8 +119,9 @@ async def find_schemas():
         non_system_schemas = [schema for schema in schema_names if not schema.startswith("pg_") and schema != "information_schema"]
         return non_system_schemas  
 
-def get_endpoints(openapi_url):
-    response = requests.get(openapi_url)
+def get_endpoints(pilot):
+    api_description_url = os.environ.get(f'{pilot.upper()}_API_DESCRIPTION_URL')
+    response = requests.get(api_description_url)
     openapi_spec = yaml.safe_load(response.text)  # Load YAML data
 
     # Extract GET endpoints
@@ -128,6 +135,7 @@ def get_endpoints(openapi_url):
             endpoint_url = path
             endpoints.append(endpoint_url.lstrip("/"))  # Remove leading slash
     
+    print(endpoints)
     return endpoints
 
 #  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Endpoints ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -135,15 +143,17 @@ def get_endpoints(openapi_url):
 async def print_schemas():
     return {"non_system_schemas": await find_schemas()}
 
+# TODO: Add a new endpoint to get all data from all endpoints
+# TODO: Add option to get last n records from a table
 @app.get("/get_data", tags=['Data'])
-async def get_data( api_version: str  = '0.5',
-                    endpoint: str = 'efcomp',
+async def get_data(endpoint: str = 'efcomp',
                     pilot: str = 'Pilot7',
                     save: bool = True):
 
     temp_headers = headers.copy()
     temp_headers['Forward-Id'] = temp_headers['Forward-Id'] + pilot
-    # print(temp_headers)
+    message = []
+    api_version = os.environ.get(f'{pilot.upper()}_API_VERSION')
 
     request_url = f'{connector_url}/{api_version}/{endpoint}/'
     # print(request_url)
@@ -152,13 +162,16 @@ async def get_data( api_version: str  = '0.5',
     # Check if request was successful (status code 200)
     if response.status_code == 200:
         try:
-            print(f"Response size: {len(response.content)} bytes")
             data = response.json()  # Attempt to decode JSON
             if(save): 
                 await create_schema(pilot.lower()) # create schema if not exists - wait for schema to be created
-                store_to_db(data, endpoint, pilot.lower()) # store df to db
-                print(data)
-            return {"message": f"{endpoint} from {pilot} has been added to db"} #data[:10]
+                if(store_to_db(data, endpoint, pilot.lower())): # store df to db
+                    message.append({"message": f"\'{endpoint}\' from \'{pilot}\' has been added to db"})
+                else: 
+                    message.append({"error": f"Failed to store \'{endpoint}\' from \'{pilot}\' to db"})
+                    return message
+            
+            message.append({"preview": data[:1]})
         except ValueError:  # includes simplejson.decoder.JSONDecodeError
             print("Response content is not valid JSON")
             print(response.text)
@@ -173,6 +186,30 @@ async def get_data( api_version: str  = '0.5',
         print("Response text:", response.text)
         return {"message": f"Request failed with status code: {response.status_code}"}
 
+    return message
+
+@app.get("/get_all_data", tags=['Data'])
+async def get_all_data(pilot: str = 'Pilot7',
+                       save: bool = True):
+
+    endpoints = get_endpoints(pilot)
+
+    message = []
+    port = os.environ.get('port')
+    
+    for endpoint in endpoints:
+        params = {'endpoint': endpoint, 'pilot': pilot, "save": save}
+        
+        response = requests.get(f'http://localhost:{port}/get_data/', params=params)
+        if response.status_code == 200:
+            # Access the return value (JSON data in this case)
+            return_value = response.json()
+            message.append(return_value)
+            print("Return value:", return_value)
+        else:
+            print("Failed to get return value. Status code:", response.status_code)
+        
+    return message
 
 # Endpoint to get a list of tables in the database
 @app.get("/get_tables", tags=["Tables"])
