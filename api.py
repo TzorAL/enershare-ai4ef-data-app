@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uvicorn
@@ -9,7 +9,8 @@ import json
 import os
 from dotenv import load_dotenv
 
-from sqlalchemy import create_engine, MetaData, text
+from sqlalchemy import create_engine, MetaData, text, Table
+from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.schema import CreateSchema
 from sqlalchemy.orm import sessionmaker, Session
 from fastapi import  Depends
@@ -139,58 +140,100 @@ def get_endpoints(pilot):
     return endpoints
 
 #  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Endpoints ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 @app.get('/print_schemas',tags=['Schemas'])
 async def print_schemas():
     return {"non_system_schemas": await find_schemas()}
 
+@app.post("/upload-csv/", tags=["Data"])
+async def upload_csv(csv_file: UploadFile = File(...), 
+                     table_name: str = Query('efcomp', description="Custom table name"),
+                     schema_name: str = Query('pilot7', description="Custom schema name")):
+    try:
+        with engine.connect() as connection:
+            await create_schema(schema_name.lower()) # create schema if not exists - wait for schema to be created
+            df = pd.read_csv(csv_file.file)
+            df.to_sql(table_name, connection, schema=schema_name, if_exists='replace', index=False)
+            # metadata.clear()
+            # metadata.reflect(bind=engine)
+            get_metadata()
+            return {"message": f"CSV file uploaded and inserted into the '{table_name}' table successfully."}
+    except Exception as e:
+        return {"message": f"An error occurred: {str(e)}"}
+
 # TODO: Add a new endpoint to get all data from all endpoints
 # TODO: Add option to get last n records from a table
 @app.get("/get_data", tags=['Data'])
-async def get_data(endpoint: str = 'efcomp',
-                    pilot: str = 'Pilot7',
-                    save: bool = True):
+async def get_data(endpoint: str = Query('efcomp', description="API endpoint defined in API description file"),
+                    pilot: str = Query('Pilot7', description="Pilot name as mentioned in dataspace agent (e.g. 'Pilot7')"),
+                    save: bool = Query(True, description='Option to save data to database')):
 
     temp_headers = headers.copy()
     temp_headers['Forward-Id'] = temp_headers['Forward-Id'] + pilot
-    message = []
+    print(f'Headers: {temp_headers}')
     api_version = os.environ.get(f'{pilot.upper()}_API_VERSION')
 
-    request_url = f'{connector_url}/{api_version}/{endpoint}/'
-    # print(request_url)
-    response = requests.get(request_url, headers=temp_headers)
-    # data = ["1","2","3","4"]
-    # Check if request was successful (status code 200)
-    if response.status_code == 200:
-        try:
-            data = response.json()  # Attempt to decode JSON
+    total_records_pulled = 0
+    num_records = 0
+    data_frames = []
+    message = []
+    
+    params = {'limit': 400000, 'offset': 0}
+
+    request_url = f'{connector_url}/{api_version}/{endpoint}'
+
+    while True:
+        print(f"Fetching data with limit {params['limit']} and offset {params['offset']}...")
+        response = requests.get(request_url, headers=temp_headers, params=params)
+        if response.status_code == 200:
+            try:
+                data = response.json()  # Attempt to decode JSON
+                # Append the identified rows to df_existing
+                df = pd.DataFrame(data)
+                print(df.head())
+                data_frames.append(df)
+                total_records_pulled += len(df)  # Update total records pulled
+                print(f"Fetched {num_records} records. Total records pulled so far: {total_records_pulled}") 
+                # print(json.dumps(data[:-1], indent=4))
+            except ValueError:  # includes simplejson.decoder.JSONDecodeError
+                print("Response content is not valid JSON")
+                print(response.text)
+                return {"message": "Response content is not valid JSON",
+                        "text": response.text}
+        else:
+            print(f"Request failed with status code: {response.status_code}")
+            print("Response text:", response.text)
+            return {"message": f"Request failed with status code: {response.status_code}",
+                    'text': response.text}
+
+        params['offset'] += 400000
+        print(f"Response length: {len(response.json())}")
+
+        if len(response.json()) < 400000:
+            # Concatenate all DataFrames into a single DataFrame
+            print('Response length is less than 400000. Exiting loop...')
+            print("Concatenating all DataFrames into a single DataFrame...")
+            final_df = pd.concat(data_frames, ignore_index=True)
+            print('Number of entires:', len(final_df))
             if(save): 
                 await create_schema(pilot.lower()) # create schema if not exists - wait for schema to be created
-                if(store_to_db(data, endpoint, pilot.lower())): # store df to db
+                if(store_to_db(final_df, endpoint, pilot.lower())): # store df to db
                     message.append({"message": f"\'{endpoint}\' from \'{pilot}\' has been added to db"})
                 else: 
-                    message.append({"error": f"Failed to store \'{endpoint}\' from \'{pilot}\' to db"})
-                    return message
-            
-            message.append({"preview": data[:1]})
-        except ValueError:  # includes simplejson.decoder.JSONDecodeError
-            print("Response content is not valid JSON")
-            print(response.text)
-            return {"message": "Response content is not valid JSON",
-                    "response_text": response.text}
-        except Exception as e:
-            # Handle any exceptions that might occur during JSON parsing or other operations
-            print("Error:", e)
-            return {"Error:", e} # Return None or handle the error as appropriate
-    else:
-        print(f"Request failed with status code: {response.status_code}")
-        print("Response text:", response.text)
-        return {"message": f"Request failed with status code: {response.status_code}"}
+                    return {"error": f"Failed to store \'{endpoint}\' from \'{pilot}\' to db"}
 
+            preview = final_df.head(1).to_json(orient="records", date_format="iso", date_unit="s", default_handler=str)
+            message.append({"preview": json.loads(preview)})
+            message.append({"number_of_entries": len(final_df)})
+            final_df.to_csv('data.csv', header=True, index=False)
+            break
+    
+    print(message)
     return message
-
+            
 @app.get("/get_all_data", tags=['Data'])
-async def get_all_data(pilot: str = 'Pilot7',
-                       save: bool = True):
+async def get_all_data(pilot: str = Query('Pilot7', description="Pilot name as mentioned in dataspace agent (e.g. 'Pilot7')"),
+                       save: bool = Query(True, description='Option to save data to database')):
 
     endpoints = get_endpoints(pilot)
 
@@ -204,7 +247,7 @@ async def get_all_data(pilot: str = 'Pilot7',
         if response.status_code == 200:
             # Access the return value (JSON data in this case)
             return_value = response.json()
-            message.append(return_value)
+            message.append(return_value[0]["message"])
             print("Return value:", return_value)
         else:
             print("Failed to get return value. Status code:", response.status_code)
@@ -234,13 +277,12 @@ async def get_tables():
         raise HTTPException(status_code=500, detail=str(e))
 
 # Endpoint to get the first entries of a table 
-@app.get("/get_table", tags=["Tables"])
-async def get_table_as_df(
-    table_name: str = 'pilot7.efcomp',
-    schema_name: str = 'pilot7',
+@app.get("/get_table_preview", tags=["Tables"])
+async def get_table_preview(
+    table_name: str = Query('pilot7.efcomp', description="Schema.table name"),
     db: Session = Depends(get_db_session),
 ):
-
+    schema_name = table_name.split('.')[0]
     metadata = get_metadata(schema=schema_name)
 
     # Check if the table exists
@@ -256,11 +298,35 @@ async def get_table_as_df(
     # Convert the result to a DataFrame
     df = pd.DataFrame(result)
 
-    return df.to_dict(orient="records")
+    # Convert DataFrame to JSON string with handling of non-serializable types
+    json_str = df.head(100).to_json(orient="records", date_format="iso", date_unit="s", default_handler=str)
 
+    # Parse JSON string back to Python objects
+    return json.loads(json_str)
+
+# TODO: In case you drop the last table of a schema, delete the schema as well
+@app.delete("/drop-table/", tags=["Tables"])
+async def drop_table(table_name: str = Query('pilot7.efcomp', description="Schema.table name")):
+    schema_name = table_name.split('.')[0]
+
+    try:
+        metadata = get_metadata(schema=schema_name)
+        # Check if the table exists before dropping it
+        
+        # Load the table metadata
+        table = Table(table_name, metadata, autoload_with=engine)
+        # Drop the table
+        table.drop(engine)
+
+        return {"message": f"Table '{table_name}' in schema '{schema_name}' dropped successfully."}
+    except NoSuchTableError:
+        return {"message": f"Table '{table_name}' in schema '{schema_name}' does not exist."}
+    except Exception as e:
+        return {"message": f"An error occurred: {str(e)}"}
+    
 @app.get("/")
 async def root():
     return {"message": "Congratulations! Your API is working as expected. Now head over to http://localhost:8889/docs"}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=9876, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8889, reload=True)
