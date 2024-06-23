@@ -5,3 +5,9 @@ servers.json
 Makefile
 pgpass
 endpoint_extract.py
+**/tmp*/
+**/ai4ef_data_app_tests/
+**/ai4ef_data_app.egg-info/
+/get_all_data.py
+**/storage_data/
+/data-app-postgrest-openapi-ro.yaml

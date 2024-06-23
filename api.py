@@ -221,6 +221,8 @@ async def get_data(endpoint: str = Query('efcomp', description="API endpoint def
                     message.append({"message": f"\'{endpoint}\' from \'{pilot}\' has been added to db"})
                 else: 
                     return {"error": f"Failed to store \'{endpoint}\' from \'{pilot}\' to db"}
+            else:
+                message.append({"message": f"{endpoint} from {pilot} has been fetched successfully."})
 
             preview = final_df.head(1).to_json(orient="records", date_format="iso", date_unit="s", default_handler=str)
             message.append({"preview": json.loads(preview)})
@@ -238,16 +240,20 @@ async def get_all_data(pilot: str = Query('Pilot7', description="Pilot name as m
     endpoints = get_endpoints(pilot)
 
     message = []
-    port = os.environ.get('port')
+    port = os.environ.get('DS_VIZ_PORT')
     
     for endpoint in endpoints:
         params = {'endpoint': endpoint, 'pilot': pilot, "save": save}
         
         response = requests.get(f'http://localhost:{port}/get_data/', params=params)
+        print('Request sent to get_data endpoint')
         if response.status_code == 200:
+            print('checking response')
+        
             # Access the return value (JSON data in this case)
+            print("Got return value:", response.json())
             return_value = response.json()
-            message.append(return_value[0]["message"])
+            message.append(response.json())
             print("Return value:", return_value)
         else:
             print("Failed to get return value. Status code:", response.status_code)
@@ -299,7 +305,7 @@ async def get_table_preview(
     df = pd.DataFrame(result)
 
     # Convert DataFrame to JSON string with handling of non-serializable types
-    json_str = df.head(100).to_json(orient="records", date_format="iso", date_unit="s", default_handler=str)
+    json_str = df.tail(100).to_json(orient="records", date_format="iso", date_unit="s", default_handler=str)
 
     # Parse JSON string back to Python objects
     return json.loads(json_str)
@@ -323,7 +329,25 @@ async def drop_table(table_name: str = Query('pilot7.efcomp', description="Schem
         return {"message": f"Table '{table_name}' in schema '{schema_name}' does not exist."}
     except Exception as e:
         return {"message": f"An error occurred: {str(e)}"}
+
+@app.delete("/drop-tables/", tags=["Tables"])
+async def drop_tables(schema_name: str = Query('latvian_meteo', description="schema_name")):
+
+    try:
+        metadata = get_metadata(schema=schema_name)
     
+        for table_name in metadata.tables:
+            # Load the table metadata
+            table = Table(table_name, metadata, autoload_with=engine)
+            # Drop the table
+            table.drop(engine)
+
+        return {"message": f"Tables from schema '{schema_name}' dropped successfully."}
+    except NoSuchTableError:
+        return {"message": f"Schema '{schema_name}' does not exist."}
+    except Exception as e:
+        return {"message": f"An error occurred: {str(e)}"}
+
 @app.get("/")
 async def root():
     return {"message": "Congratulations! Your API is working as expected. Now head over to http://localhost:8889/docs"}
