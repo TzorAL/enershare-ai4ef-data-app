@@ -1,5 +1,6 @@
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime as dt
+from datetime import timedelta
 import openpyxl
 import os
 import csv
@@ -79,9 +80,7 @@ async def latvian_meteo_op(context):
     # Print all combinations
     for station_name, station_code in station_attributes.items():
         for meteorology_name, meteorology_code in meteorology_attributes.items():
-            # Start tracing memory allocations
-            # print_memory_usage("Start of loop")
-
+            
             print(f"Station: {station_name} ({station_code}), Meteorology: {meteorology_name} ({meteorology_code})")
             table_name = f'{station_name.lower()}_{meteorology_name}'
 
@@ -98,24 +97,27 @@ async def latvian_meteo_op(context):
                 table_df = await get_table_last_row_as_df(schema_name, table_name)
                 start_date = table_df.iloc[0]['Datums'] # get the last date from the table
                 print(f"Last date in the table: {start_date}")
+
+                # Add one day to the start date to avoid fetching the same data
+                date_obj = dt.strptime(start_date, "%d.%m.%Y")
+                start_date_obj = date_obj + timedelta(days=1)
+                start_date = start_date_obj.strftime("%d.%m.%Y")
+
                 context.log.info(f"Last date in the table: {start_date}")
-                # del table_df
             else:
                 start_date = meteo_config.initial_date
                 context.log.info(f"Table {table_name} does not exist in the database. Setting the start date to {start_date}")
 
-            # print_memory_usage("After getting the start date")
+            # Remove one day from date to avoid adding incomplete current date data
+            date_obj = dt.strptime(meteo_config.current_date, "%d.%m.%Y")
+            end_date_obj = date_obj - timedelta(days=1)
+            end_date = end_date_obj.strftime("%d.%m.%Y")
 
-            # Parse the date string to a datetime object
-            date_obj = datetime.strptime(meteo_config.current_date, "%d.%m.%Y")
-            # Subtract one day
-            previous_date_obj = date_obj - timedelta(days=1)
-            # Format the result back to the desired string format
-            previous_date = previous_date_obj.strftime("%d.%m.%Y")
+            print(end_date, start_date)
 
-            print(previous_date, start_date)
-
-            if(previous_date == start_date):
+            # if the end date is less than the start date, skip the current station and meteorology combination
+            # This means that db has caught up to current end date and goes after (to incomplete data)
+            if(dt.strptime(end_date, "%d.%m.%Y") < dt.strptime(start_date, "%d.%m.%Y")): 
                 print(f"{count}. Data for {station_name} ({station_code}) and {meteorology_name} ({meteorology_code}) is up to date.")
                 context.log.info(f"{count}. Data for {station_name} ({station_code}) and {meteorology_name} ({meteorology_code}) is up to date.")
                 count = count + 1            
@@ -125,8 +127,8 @@ async def latvian_meteo_op(context):
             params = {
                 "format": "xls",
                 "mode": "meteo",
-                "sakuma_datums": datetime.strptime(start_date, "%d.%m.%Y").strftime("%Y-%m-%d"),
-                "beigu_datums": datetime.strptime(previous_date, "%d.%m.%Y").strftime("%Y-%m-%d"),
+                "sakuma_datums": dt.strptime(start_date, "%d.%m.%Y").strftime("%Y-%m-%d"),
+                "beigu_datums": dt.strptime(end_date, "%d.%m.%Y").strftime("%Y-%m-%d"),
                 "stacija_id": station_code,
                 "raditaja_id": meteorology_code
             }
@@ -146,17 +148,9 @@ async def latvian_meteo_op(context):
                 # Continue to the next station and meteorology combination
                 count = count + 1
                 continue
-
-            # print_memory_usage("After reading the Excel file")
-
-            # if os.path.exists(data_storage_path): 
-            #     delete_last_row(data_storage_path) # Remove the last row from the CSV file to avoid duplicates
-            
-            # if(table_exists_in_schema(f'{schema_name}.{station_name}_{meteorology_name}', schema_name)):
-            #     delete_last_db_row(data_storage_path) # Remove the last row from the CSV file to avoid duplicates
             
             print(f'{count}. Data fetched from {df["Datums"].iloc[0]} till {df["Datums"].iloc[-1]}')
-    
+
             # Check if last row contains NaN values
             if df.iloc[-1].isnull().any():
                 # Remove last row
@@ -168,8 +162,6 @@ async def latvian_meteo_op(context):
             # metadata_dict.update({f'{table_name}': 'updated!'})
             context.log.info(f"{count}. Data stored in {table_name}")
 
-            # print_memory_usage("After storing the data in the database")
-
             # if os.path.exists(f"storage_data/{table_name}.csv"):
             #     # If the file exists, append the data to the file and keep existing header
             #     df.to_csv(f'storage_data/{table_name}.csv', mode='a', index=False, header=False, encoding='utf-8-sig')
@@ -178,28 +170,15 @@ async def latvian_meteo_op(context):
             #     df.to_csv(f'storage_data/{table_name}.csv', index=False, header=True, encoding='utf-8-sig')
             
             count = count + 1
-            # if(count >= 1): 
-            #     return Output(value=pd.DataFrame.from_dict(metadata_dict, orient='index'), 
-            #                 metadata={
-            #                     "new_enties": MetadataValue.md(df.tail().to_markdown()),
-            #                 })
-            # Clean up to free memory
-            # del df
-            # del start_date
-            # del previous_date
-            # del url_with_params
-            # del params
             
             # Force garbage collection
             gc.collect()
-            # time.sleep(1)  # Example: Sleep for 5 seconds at the end of each station processing
-            # print_memory_usage("After cleaning up memory allocations")
             
         time.sleep(5)  # Example: Sleep for 5 seconds at the end of each station processing
 
     metadata_dict = {
         "count": count,
-        "last_update": datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        "last_update": dt.now().strftime("%d.%m.%Y %H:%M:%S")
     }
     
     return Output(value=pd.DataFrame.from_dict(metadata_dict, orient='index'), 

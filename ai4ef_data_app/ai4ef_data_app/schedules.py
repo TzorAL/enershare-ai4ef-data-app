@@ -8,7 +8,7 @@ from .jobs import latvian_meteo_job, pilot_data_job
 from datetime import datetime, timedelta
 
 # we do this to change the current date at each run it scedules 
-@schedule(job=latvian_meteo_job, cron_schedule="0 6 * * *") # every 24 hours at 6 am
+@schedule(job=latvian_meteo_job, cron_schedule="0 6 * * *", execution_timezone='Europe/Athens') # every 24 hours at 6 am GTM+3
 def latvian_meteo_job_schedule(context: ScheduleEvaluationContext):
 
     scheduled_date = context.scheduled_execution_time.strftime("%d.%m.%Y")
@@ -45,7 +45,7 @@ def latvian_meteo_job_schedule(context: ScheduleEvaluationContext):
     )
 
 # we do this to change the current date at each run it scedules 
-@schedule(job=pilot_data_job, cron_schedule="0 6 * * *") # every 24 hours at 6 am
+@schedule(job=pilot_data_job, cron_schedule="0 6 * * *", execution_timezone='Europe/Athens') # every 24 hours at 6 am GTM+3
 def pilot_data_job_schedule(context: ScheduleEvaluationContext):
 
     scheduled_date = context.scheduled_execution_time.strftime("%Y-%m-%d")
